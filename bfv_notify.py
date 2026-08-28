@@ -1,39 +1,52 @@
 #!/usr/bin/env python3
 """
-BFV Sonntagabend-Ergebnis-Notifier für Telegram
-=================================================
-Holt die letzten Ergebnisse von zwei BFV-Mannschaften und schickt sie
-per Telegram. Gedacht für einen wöchentlichen Cronjob (Sonntagabend).
+BFV Sonntagabend-Ergebnis-Notifier für Telegram (v2 - mit echten Ergebniszahlen)
+==================================================================================
+Holt die letzten Ergebnisse zweier BFV-Mannschaften und schickt sie per Telegram.
 
-Datenquelle: öffentliche, für den Browser bestimmte Team-Seiten auf
-bfv.de (nicht die per robots.txt gesperrte widget.bfv.de-Subdomain).
-Kein Login, keine privaten Daten - reine Ergebnis-/Terminanzeige,
-so wie sie jeder Besucher im Browser sieht.
+Datenquelle: der offizielle "Vereinsspielplan"-PDF-Export von bfv.de
+(derselbe Button, der auf der Vereinsseite als "Vereinsspielplan - Alle
+künftigen Spiele des Vereins ... als PDF öffnen" verlinkt ist). Das PDF
+wird serverseitig fertig gerendert, enthält also - anders als die HTML-
+Seite - die tatsächlichen Ergebniszahlen im Text, nicht per JavaScript
+nachgeladen.
 
 Setup:
-  pip install requests beautifulsoup4 --break-system-packages
-  Umgebungsvariablen setzen (z.B. in /etc/environment oder im Cronjob):
-    TELEGRAM_BOT_TOKEN=...
-    TELEGRAM_CHAT_ID=...
+  pip install requests pdfplumber --break-system-packages
+  Umgebungsvariablen TELEGRAM_BOT_TOKEN und TELEGRAM_CHAT_ID setzen.
 """
 
 import os
 import re
 import sys
+import tempfile
+from datetime import datetime
+
 import requests
-from bs4 import BeautifulSoup
+
+try:
+    import pdfplumber
+except ImportError:
+    print("Bitte installieren: pip install pdfplumber --break-system-packages", file=sys.stderr)
+    sys.exit(1)
 
 # ---------------------------------------------------------------------------
-# Konfiguration: die beiden Mannschaften
+# Konfiguration
 # ---------------------------------------------------------------------------
+CLUB_ID = "00ES8GNLE000000QVV0AG08LVUPGND5I"  # TuS Aschaffenburg-Leider
+VEREINSSPIELPLAN_URL = f"https://service.bfv.de/rest/pdfexport/vereinsspiele?id={CLUB_ID}"
+
+# Stichworte, um Zeilen im PDF-Text den beiden Mannschaften zuzuordnen.
 TEAMS = [
     {
         "name": "TuS 1893 Aschaffenburg-Leider (1. Mannschaft)",
-        "url": "https://www.bfv.de/mannschaften/tus-1893-aschaffenburg-leider/016PDSNBRC000000VV0AG811VTE5EA5R",
+        "keywords": ["TuS 1893 Aschaffenburg-Leider", "TuS 1893 Aschaffenburg-<wbr>Leider"],
+        "exclude": ["Leider 2", "Leider II"],  # nicht mit der 2. Mannschaft verwechseln
     },
     {
         "name": "(SG 1) DJK Aschaffenburg/TuS 1893 Leider 2",
-        "url": "https://www.bfv.de/mannschaften/sg-1-djk-aschaffenburg-tus-1893-leider-2/016PEMIT7O000000VV0AG80NVV8OQVTB",
+        "keywords": ["DJK Aschaffenburg", "Leider 2", "Leider II"],
+        "exclude": [],
     },
 ]
 
@@ -41,86 +54,87 @@ TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
 HEADERS = {
-    # Ehrlicher, erkennbarer User-Agent statt eines gefälschten Browser-UA -
-    # das ist guter Stil für ein privates Automatisierungsskript.
     "User-Agent": "Mozilla/5.0 (compatible; TuS-Leider-ResultBot/1.0; privat, nicht kommerziell)"
 }
 
+# Zeile im PDF, z.B.:
+# "16.05.2026 10:00 FC Augsburg U12 - TSV 1860 München U12 6:2"
+# oder mit Mittelpunkt-Trennzeichen "16.05.2026 · 10:00 · TeamA - TeamB 6:2"
+LINE_PATTERN = re.compile(
+    r"(?P<datum>\d{2}\.\d{2}\.\d{4})"
+    r".{0,40}?"
+    r"(?P<heim>[A-Za-zÄÖÜäöüß0-9\.\-\/\(\)&' ]{3,60}?)\s*[-–]\s*"
+    r"(?P<gast>[A-Za-zÄÖÜäöüß0-9\.\-\/\(\)&' ]{3,60}?)\s+"
+    r"(?P<hs>\d{1,2})\s*:\s*(?P<as>\d{1,2})\b"
+)
 
-def fetch_page(url: str) -> str:
-    resp = requests.get(url, headers=HEADERS, timeout=15)
+
+def download_pdf_text(url: str) -> str:
+    resp = requests.get(url, headers=HEADERS, timeout=20)
     resp.raise_for_status()
-    return resp.text
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
+        f.write(resp.content)
+        path = f.name
+
+    text = ""
+    with pdfplumber.open(path) as pdf:
+        for page in pdf.pages:
+            page_text = page.extract_text() or ""
+            text += page_text + "\n"
+    os.unlink(path)
+    return text
 
 
-def find_last_result(html: str) -> str | None:
-    """
-    Sucht im sichtbaren Text der Seite nach dem Block 'Letztes Spiel ... Zum Spiel'
-    und extrahiert Datum, Teams und Ergebnis.
+def find_matches_for_team(pdf_text: str, team: dict) -> list[dict]:
+    matches = []
+    for line in pdf_text.splitlines():
+        m = LINE_PATTERN.search(line)
+        if not m:
+            continue
 
-    Rückgabe z.B.: "So. 23.08.2026: (SG1) Leider 2 2:1 FC Laufach"
-    oder None, wenn nichts gefunden wurde (dann Fallback auf Spielberichte).
-    """
-    soup = BeautifulSoup(html, "html.parser")
-    text = soup.get_text(" ", strip=True)
+        heim = m.group("heim").strip()
+        gast = m.group("gast").strip()
+        combined = f"{heim} {gast}"
 
-    # Beispiel-Rohformat auf der Seite (nur wenn der Score wirklich im
-    # server-seitigen HTML steckt - das ist bei bfv.de nicht garantiert,
-    # da Angular manche Werte erst per JS im Browser nachlädt):
-    # "Letztes Spiel So.. 23.08.2026 /14:00 Uhr TeamA TeamA 2 : 1 TeamB TeamB Zum Spiel"
-    #
-    # Wichtig: \d+ statt .+? für die Score-Gruppen, damit wir NIEMALS auf
-    # eine leere " : "-Stelle matchen und dabei nachfolgenden Fließtext
-    # (z.B. "Zum Spiel Nächstes Spiel ...") mit einsammeln.
-    pattern = re.compile(
-        r"Letztes Spiel\s+"
-        r"(?P<tag>\w{2})\.\.\s+(?P<datum>\d{2}\.\d{2}\.\d{4})\s*/\s*(?P<zeit>\d{2}:\d{2})\s*Uhr\s+"
-        r"(?P<heim>[^\d]+?)\s+"
-        r"(?P<hs>\d+)\s*:\s*(?P<as>\d+)\s*"
-        r"(?:\(\s*\d*\s*:\s*\d*\s*\)\s*)?"
-        r"(?P<gast>[^\d]+?)\s+Zum Spiel",
-        re.UNICODE,
-    )
-    m = pattern.search(text)
-    if not m:
-        return None
+        if not any(kw in combined for kw in team["keywords"]):
+            continue
+        if any(ex in combined for ex in team["exclude"]):
+            continue
 
+        try:
+            datum = datetime.strptime(m.group("datum"), "%d.%m.%Y")
+        except ValueError:
+            continue
+
+        matches.append(
+            {
+                "datum": datum,
+                "datum_str": m.group("datum"),
+                "heim": heim,
+                "gast": gast,
+                "hs": m.group("hs"),
+                "as": m.group("as"),
+                "line": line.strip(),
+            }
+        )
+    return matches
+
+
+def get_result_line(team: dict, pdf_text: str) -> str:
+    matches = find_matches_for_team(pdf_text, team)
+    if not matches:
+        return f"⚠️ {team['name']}: Keine passende Zeile im PDF gefunden."
+
+    # jüngstes Spiel mit Datum <= heute (also ein bereits gespieltes Spiel)
+    past = [m for m in matches if m["datum"] <= datetime.now()]
+    if not past:
+        return f"⚠️ {team['name']}: Nur zukünftige Spiele gefunden, noch kein Ergebnis."
+
+    last = max(past, key=lambda m: m["datum"])
     return (
-        f"{m.group('tag')}. {m.group('datum')}: "
-        f"{m.group('heim').strip()} {m.group('hs')}:{m.group('as')} {m.group('gast').strip()}"
+        f"⚽ {team['name']}\n"
+        f"{last['datum_str']}: {last['heim']} {last['hs']}:{last['as']} {last['gast']}"
     )
-
-
-def find_latest_match_report(html: str) -> str | None:
-    """
-    Fallback: nimmt die Überschrift des neuesten Eintrags unter 'Spielberichte'.
-    Enthält kein exaktes Zahlen-Ergebnis, aber eine Kurzzusammenfassung
-    (z.B. '25.08.2026: TuS ... nimmt drei Punkte mit nach Hause').
-    """
-    soup = BeautifulSoup(html, "html.parser")
-    for a in soup.find_all("a", href=True):
-        if "/spiele/spielbericht/" in a["href"]:
-            t = a.get_text(strip=True)
-            if t:
-                return t
-    return None
-
-
-def get_result_line(team: dict) -> str:
-    try:
-        html = fetch_page(team["url"])
-    except requests.RequestException as e:
-        return f"⚠️ {team['name']}: Seite nicht erreichbar ({e})"
-
-    result = find_last_result(html)
-    if result:
-        return f"⚽ {team['name']}\n{result}"
-
-    fallback = find_latest_match_report(html)
-    if fallback:
-        return f"⚽ {team['name']}\n{fallback}\n(Score-Parsing fehlgeschlagen, siehe Spielbericht)"
-
-    return f"⚠️ {team['name']}: Kein Ergebnis gefunden - Seite hat sich evtl. strukturell geändert."
 
 
 def send_telegram_message(text: str) -> None:
@@ -138,9 +152,20 @@ def send_telegram_message(text: str) -> None:
 
 
 def main():
-    lines = [get_result_line(team) for team in TEAMS]
+    try:
+        pdf_text = download_pdf_text(VEREINSSPIELPLAN_URL)
+    except requests.RequestException as e:
+        print(f"PDF konnte nicht geladen werden: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    if os.environ.get("DEBUG"):
+        print("----- PDF-Rohtext (DEBUG) -----", file=sys.stderr)
+        print(pdf_text, file=sys.stderr)
+        print("--------------------------------", file=sys.stderr)
+
+    lines = [get_result_line(team, pdf_text) for team in TEAMS]
     message = "🟢 <b>BFV-Ergebnisse am Wochenende</b>\n\n" + "\n\n".join(lines)
-    print(message)  # auch ins Cron-Log, zum Debuggen
+    print(message)
     send_telegram_message(message)
 
 
