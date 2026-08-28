@@ -41,12 +41,14 @@ TEAMS = [
     {
         "name": "TuS 1893 Aschaffenburg-Leider (1. Mannschaft)",
         "pdf_url": "https://service.bfv.de/rest/pdfexport/spieltagsuebersicht?staffel=0307PL25JS000057VS5489BUVT69HBT7-G",
+        "team_url": "https://www.bfv.de/mannschaften/tus-1893-aschaffenburg-leider/016PDSNBRC000000VV0AG811VTE5EA5R",
         "keywords": ["TuS 1893 Aschaffenburg-Leider", "TuS 1893 Aschaffenburg-<wbr>Leider"],
         "exclude": ["Leider 2", "Leider II"],  # nicht mit der 2. Mannschaft verwechseln
     },
     {
         "name": "(SG 1) DJK Aschaffenburg/TuS 1893 Leider 2",
         "pdf_url": "https://service.bfv.de/rest/pdfexport/spieltagsuebersicht?staffel=0318S0SUUK000006VS5489BTVSK8S3O6-G",
+        "team_url": "https://www.bfv.de/mannschaften/sg-1-djk-aschaffenburg-tus-1893-leider-2/016PEMIT7O000000VV0AG80NVV8OQVTB",
         "keywords": ["DJK Aschaffenburg", "Leider 2", "Leider II"],
         "exclude": [],
     },
@@ -147,7 +149,7 @@ def get_result_line(team: dict) -> str:
 
     last = max(past, key=lambda m: m["datum"])
     return (
-        f"⚽ {team['name']}\n"
+        f"⚽ <a href=\"{team['team_url']}\">{team['name']}</a>\n"
         f"{last['datum_str']}: {last['heim']} {last['hs']}:{last['as']} {last['gast']}"
     )
 
