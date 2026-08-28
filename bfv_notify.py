@@ -33,18 +33,20 @@ except ImportError:
 # ---------------------------------------------------------------------------
 # Konfiguration
 # ---------------------------------------------------------------------------
-CLUB_ID = "00ES8GNLE000000QVV0AG08LVUPGND5I"  # TuS Aschaffenburg-Leider
-VEREINSSPIELPLAN_URL = f"https://service.bfv.de/rest/pdfexport/vereinsspiele?id={CLUB_ID}"
-
-# Stichworte, um Zeilen im PDF-Text den beiden Mannschaften zuzuordnen.
+# Jede Mannschaft spielt in einer eigenen Liga (staffel) - deshalb ein
+# eigener "Spieltagsübersicht"-PDF-Link pro Team. Dieses PDF enthält
+# (anders als der Vereinsspielplan) auch die bereits gespielten
+# Spieltage mit echten Ergebniszahlen.
 TEAMS = [
     {
         "name": "TuS 1893 Aschaffenburg-Leider (1. Mannschaft)",
+        "pdf_url": "https://service.bfv.de/rest/pdfexport/spieltagsuebersicht?staffel=0307PL25JS000057VS5489BUVT69HBT7-G",
         "keywords": ["TuS 1893 Aschaffenburg-Leider", "TuS 1893 Aschaffenburg-<wbr>Leider"],
         "exclude": ["Leider 2", "Leider II"],  # nicht mit der 2. Mannschaft verwechseln
     },
     {
         "name": "(SG 1) DJK Aschaffenburg/TuS 1893 Leider 2",
+        "pdf_url": "https://service.bfv.de/rest/pdfexport/spieltagsuebersicht?staffel=0318S0SUUK000006VS5489BTVSK8S3O6-G",
         "keywords": ["DJK Aschaffenburg", "Leider 2", "Leider II"],
         "exclude": [],
     },
@@ -120,7 +122,17 @@ def find_matches_for_team(pdf_text: str, team: dict) -> list[dict]:
     return matches
 
 
-def get_result_line(team: dict, pdf_text: str) -> str:
+def get_result_line(team: dict) -> str:
+    try:
+        pdf_text = download_pdf_text(team["pdf_url"])
+    except requests.RequestException as e:
+        return f"⚠️ {team['name']}: PDF konnte nicht geladen werden ({e})"
+
+    if os.environ.get("DEBUG"):
+        print(f"----- PDF-Rohtext (DEBUG) für {team['name']} -----", file=sys.stderr)
+        print(pdf_text, file=sys.stderr)
+        print("--------------------------------", file=sys.stderr)
+
     matches = find_matches_for_team(pdf_text, team)
     if not matches:
         return f"⚠️ {team['name']}: Keine passende Zeile im PDF gefunden."
@@ -152,18 +164,7 @@ def send_telegram_message(text: str) -> None:
 
 
 def main():
-    try:
-        pdf_text = download_pdf_text(VEREINSSPIELPLAN_URL)
-    except requests.RequestException as e:
-        print(f"PDF konnte nicht geladen werden: {e}", file=sys.stderr)
-        sys.exit(1)
-
-    if os.environ.get("DEBUG"):
-        print("----- PDF-Rohtext (DEBUG) -----", file=sys.stderr)
-        print(pdf_text, file=sys.stderr)
-        print("--------------------------------", file=sys.stderr)
-
-    lines = [get_result_line(team, pdf_text) for team in TEAMS]
+    lines = [get_result_line(team) for team in TEAMS]
     message = "🟢 <b>BFV-Ergebnisse am Wochenende</b>\n\n" + "\n\n".join(lines)
     print(message)
     send_telegram_message(message)
