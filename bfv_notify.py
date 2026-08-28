@@ -60,14 +60,17 @@ HEADERS = {
 }
 
 # Zeile im PDF, z.B.:
-# "16.05.2026 10:00 FC Augsburg U12 - TSV 1860 München U12 6:2"
-# oder mit Mittelpunkt-Trennzeichen "16.05.2026 · 10:00 · TeamA - TeamB 6:2"
+# "064 26.08.2026 19:00 TuS 1893 Aschaffenburg-Leider - SpVgg Hösbach-Bahnhof 1:2"
+#
+# Wichtig: Team-Namen können selbst Bindestriche enthalten (z.B.
+# "Aschaffenburg-Leider", "Ringheim-Grossostheim") - die haben KEIN
+# Leerzeichen um den Bindestrich. Der eigentliche Trenner zwischen den
+# beiden Mannschaften hat dagegen immer ein Leerzeichen auf beiden
+# Seiten (" - "). Deshalb \s-\s (mit Leerzeichen) statt nur \s*-\s*.
 LINE_PATTERN = re.compile(
-    r"(?P<datum>\d{2}\.\d{2}\.\d{4})"
-    r".{0,40}?"
-    r"(?P<heim>[A-Za-zÄÖÜäöüß0-9\.\-\/\(\)&' ]{3,60}?)\s*[-–]\s*"
-    r"(?P<gast>[A-Za-zÄÖÜäöüß0-9\.\-\/\(\)&' ]{3,60}?)\s+"
-    r"(?P<hs>\d{1,2})\s*:\s*(?P<as>\d{1,2})\b"
+    r"(?P<datum>\d{2}\.\d{2}\.\d{4})\s+\d{2}:\d{2}\s+"
+    r"(?P<heim>.+?)\s-\s(?P<gast>.+?)\s+"
+    r"(?P<hs>\d{1,2}):(?P<as>\d{1,2})\b"
 )
 
 
