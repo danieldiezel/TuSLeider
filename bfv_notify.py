@@ -64,15 +64,21 @@ def find_last_result(html: str) -> str | None:
     soup = BeautifulSoup(html, "html.parser")
     text = soup.get_text(" ", strip=True)
 
-    # Beispiel-Rohformat auf der Seite:
+    # Beispiel-Rohformat auf der Seite (nur wenn der Score wirklich im
+    # server-seitigen HTML steckt - das ist bei bfv.de nicht garantiert,
+    # da Angular manche Werte erst per JS im Browser nachlädt):
     # "Letztes Spiel So.. 23.08.2026 /14:00 Uhr TeamA TeamA 2 : 1 TeamB TeamB Zum Spiel"
+    #
+    # Wichtig: \d+ statt .+? für die Score-Gruppen, damit wir NIEMALS auf
+    # eine leere " : "-Stelle matchen und dabei nachfolgenden Fließtext
+    # (z.B. "Zum Spiel Nächstes Spiel ...") mit einsammeln.
     pattern = re.compile(
         r"Letztes Spiel\s+"
         r"(?P<tag>\w{2})\.\.\s+(?P<datum>\d{2}\.\d{2}\.\d{4})\s*/\s*(?P<zeit>\d{2}:\d{2})\s*Uhr\s+"
-        r"(?P<heim>.+?)\s+(?P<heim2>\1?.+?)\s*"
+        r"(?P<heim>[^\d]+?)\s+"
         r"(?P<hs>\d+)\s*:\s*(?P<as>\d+)\s*"
-        r"(?:\([^)]*\)\s*)?"
-        r"(?P<gast>.+?)\s+(?P<gast2>.+?)\s+Zum Spiel",
+        r"(?:\(\s*\d*\s*:\s*\d*\s*\)\s*)?"
+        r"(?P<gast>[^\d]+?)\s+Zum Spiel",
         re.UNICODE,
     )
     m = pattern.search(text)
